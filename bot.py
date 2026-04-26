@@ -1,8 +1,9 @@
 import telebot
 from telebot import types
-import psycopg2
 import time
 import os
+import psycopg2
+from psycopg2 import pool
 
 # ====== TOKEN ======
 TOKEN = os.getenv("BOT_TOKEN")
@@ -12,9 +13,23 @@ CHANNEL = "@mu_un1"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
-# ====== DATABASE ======
-db = psycopg2.connect(os.getenv("DATABASE_URL"))
-cur = db.cursor()
+# ====== DATABASE (POOL) ======
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+db_pool = psycopg2.pool.SimpleConnectionPool(
+    1, 20,
+    DATABASE_URL
+)
+
+def get_conn():
+    return db_pool.getconn()
+
+def put_conn(conn):
+    db_pool.putconn(conn)
+
+# ====== INIT TABLES ======
+conn = get_conn()
+cur = conn.cursor()
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS leaders(
@@ -33,21 +48,34 @@ CREATE TABLE IF NOT EXISTS players(
 )
 """)
 
-db.commit()
+conn.commit()
+put_conn(conn)
+
+# ====== ADD OWNER ======
+conn = get_conn()
+cur = conn.cursor()
 
 cur.execute(
     "INSERT INTO leaders(user_id) VALUES(%s) ON CONFLICT DO NOTHING",
     (OWNER_ID,)
 )
-db.commit()
+
+conn.commit()
+put_conn(conn)
 
 steps = {}
 cache = {}
 
 # ====== FUNCTIONS ======
 def is_leader(uid):
+    conn = get_conn()
+    cur = conn.cursor()
+
     cur.execute("SELECT 1 FROM leaders WHERE user_id=%s", (uid,))
-    return cur.fetchone() is not None
+    res = cur.fetchone()
+
+    put_conn(conn)
+    return res is not None
 
 
 def subscribed(uid):
@@ -108,8 +136,15 @@ def register(m):
         start(m)
         return
 
+    conn = get_conn()
+    cur = conn.cursor()
+
     cur.execute("SELECT 1 FROM players WHERE user_id=%s", (uid,))
-    if cur.fetchone():
+    exists = cur.fetchone()
+
+    put_conn(conn)
+
+    if exists:
         bot.send_message(uid, "أنت مسجل مسبقاً")
         return
 
@@ -119,19 +154,15 @@ def register(m):
 # ====== COUNT ======
 @bot.message_handler(func=lambda m: m.text == "📊 عدد اللاعبين")
 def count_users(m):
+    conn = get_conn()
+    cur = conn.cursor()
+
     cur.execute("SELECT COUNT(*) FROM players WHERE status='accepted'")
     n = cur.fetchone()[0]
+
+    put_conn(conn)
+
     bot.send_message(m.chat.id, f"عدد اللاعبين: {n}")
-
-# ====== INFO ======
-@bot.message_handler(func=lambda m: m.text == "ℹ️ معلومات")
-def info(m):
-    bot.send_message(m.chat.id, "بوت تسجيل اللاعبين")
-
-# ====== CONTACT ======
-@bot.message_handler(func=lambda m: m.text == "📞 تواصل")
-def contact(m):
-    bot.send_message(m.chat.id, "@username")
 
 # ====== REQUESTS ======
 @bot.message_handler(func=lambda m: m.text == "📥 الطلبات")
@@ -139,12 +170,17 @@ def requests_btn(m):
     if not is_leader(m.chat.id):
         return
 
+    conn = get_conn()
+    cur = conn.cursor()
+
     cur.execute("""
         SELECT user_id,name,link,serial,screen_file_id
         FROM players
         WHERE status='pending'
     """)
     rows = cur.fetchall()
+
+    put_conn(conn)
 
     if not rows:
         bot.send_message(m.chat.id, "لا توجد طلبات")
@@ -176,15 +212,19 @@ def callback(c):
     action, uid = c.data.split(":")
     uid = int(uid)
 
+    conn = get_conn()
+    cur = conn.cursor()
+
     if action == "acc":
         cur.execute("UPDATE players SET status='accepted' WHERE user_id=%s", (uid,))
-        db.commit()
         bot.send_message(uid, "تم قبول طلبك ✅")
 
     elif action == "rej":
         cur.execute("DELETE FROM players WHERE user_id=%s", (uid,))
-        db.commit()
         bot.send_message(uid, "تم رفض طلبك ❌")
+
+    conn.commit()
+    put_conn(conn)
 
     bot.answer_callback_query(c.id, "تم")
 
@@ -221,6 +261,9 @@ def all_messages(m):
     if m.content_type == "photo" and step == "screen":
         file_id = m.photo[-1].file_id
 
+        conn = get_conn()
+        cur = conn.cursor()
+
         cur.execute("""
             INSERT INTO players(user_id,name,link,serial,status,screen_file_id)
             VALUES(%s,%s,%s,%s,%s,%s)
@@ -233,7 +276,9 @@ def all_messages(m):
             "pending",
             file_id
         ))
-        db.commit()
+
+        conn.commit()
+        put_conn(conn)
 
         steps.pop(uid, None)
         cache.pop(uid, None)
