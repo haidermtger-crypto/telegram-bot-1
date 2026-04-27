@@ -14,6 +14,7 @@ CHANNEL = "@mu_un1"
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+
 db_pool = psycopg2.pool.SimpleConnectionPool(1, 20, DATABASE_URL)
 
 def get_conn():
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS players(
 conn.commit()
 put_conn(conn)
 
+# ===== ADD OWNER =====
 conn = get_conn()
 cur = conn.cursor()
 cur.execute("INSERT INTO leaders(user_id) VALUES(%s) ON CONFLICT DO NOTHING",(OWNER_ID,))
@@ -70,6 +72,7 @@ def subscribed(uid):
 def valid_facebook(link):
     return re.match(r"(https?://)?(www\.)?(facebook\.com|fb\.com)/", link)
 
+# ===== MENUS =====
 def user_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("📝 تسجيل","📊 عدد اللاعبين")
@@ -104,7 +107,7 @@ def start(m):
 
     send_home(uid)
 
-# ===== معلومات =====
+# ===== INFO =====
 @bot.message_handler(func=lambda m: m.text=="ℹ️ معلومات")
 def info(m):
     bot.send_message(m.chat.id,
@@ -123,12 +126,12 @@ def info(m):
 تحياتنا لكم 
 الاتحاد العراقي للكلانات""")
 
-# ===== تواصل =====
+# ===== CONTACT =====
 @bot.message_handler(func=lambda m: m.text=="📞 تواصل")
 def contact(m):
     bot.send_message(m.chat.id,"📬 تواصل: @haider_awwd")
 
-# ===== تسجيل =====
+# ===== REGISTER =====
 @bot.message_handler(func=lambda m: m.text=="📝 تسجيل")
 def reg(m):
     uid = m.chat.id
@@ -148,7 +151,7 @@ def reg(m):
     steps[uid]="name"
     bot.send_message(uid,"ارسل اسمك")
 
-# ===== عدد =====
+# ===== COUNT =====
 @bot.message_handler(func=lambda m: m.text=="📊 عدد اللاعبين")
 def count(m):
     conn = get_conn()
@@ -158,7 +161,7 @@ def count(m):
     put_conn(conn)
     bot.send_message(m.chat.id,f"📊 عدد اللاعبين: {n}")
 
-# ===== طلبات =====
+# ===== REQUESTS =====
 @bot.message_handler(func=lambda m: m.text=="📥 الطلبات")
 def requests(m):
     if not is_leader(m.chat.id): return
@@ -187,7 +190,7 @@ def requests(m):
         else:
             bot.send_message(m.chat.id,txt,reply_markup=kb)
 
-# ===== CALLBACK (FIXED) =====
+# ===== CALLBACK =====
 @bot.callback_query_handler(func=lambda c: True)
 def callback(c):
     if not is_leader(c.message.chat.id):
@@ -199,15 +202,20 @@ def callback(c):
     action, uid = c.data.split(":")
     uid = int(uid)
 
-    old_text = c.message.caption if c.message.caption else c.message.text
-
     if action=="acc":
         cur.execute("UPDATE players SET status='accepted' WHERE user_id=%s",(uid,))
         conn.commit()
 
         bot.send_message(uid,"🎉 تم قبول طلبك بنجاح")
 
-        new_text = old_text + "\n\n✅ تمت الموافقة"
+        bot.edit_message_caption(
+            chat_id=c.message.chat.id,
+            message_id=c.message.message_id,
+            caption=c.message.caption + "\n\n✅ تم القبول",
+            reply_markup=None
+        )
+
+        bot.answer_callback_query(c.id,"تم القبول ✅")
 
     elif action=="rej":
         cur.execute("DELETE FROM players WHERE user_id=%s",(uid,))
@@ -215,28 +223,164 @@ def callback(c):
 
         bot.send_message(uid,"❌ تم رفض طلبك، تأكد من صحة معلوماتك")
 
-        new_text = old_text + "\n\n❌ تم الرفض"
+        bot.edit_message_caption(
+            chat_id=c.message.chat.id,
+            message_id=c.message.message_id,
+            caption=c.message.caption + "\n\n❌ تم الرفض",
+            reply_markup=None
+        )
 
-    try:
-        if c.message.photo:
-            bot.edit_message_caption(
-                caption=new_text,
-                chat_id=c.message.chat.id,
-                message_id=c.message.message_id,
-                reply_markup=None
-            )
-        else:
-            bot.edit_message_text(
-                text=new_text,
-                chat_id=c.message.chat.id,
-                message_id=c.message.message_id,
-                reply_markup=None
-            )
-    except:
-        pass
+        bot.answer_callback_query(c.id,"تم الرفض ❌")
 
-    bot.answer_callback_query(c.id,"تم")
     put_conn(conn)
+
+# ===== ADD LEADER =====
+@bot.message_handler(func=lambda m: m.text=="➕ إضافة قائد")
+def add_leader(m):
+    if not is_leader(m.chat.id): return
+    steps[m.chat.id] = "add_leader"
+    bot.send_message(m.chat.id,"ارسل ايدي الشخص")
+
+# ===== REMOVE LEADER =====
+@bot.message_handler(func=lambda m: m.text=="➖ حذف قائد")
+def remove_leader(m):
+    if not is_leader(m.chat.id): return
+    steps[m.chat.id] = "remove_leader"
+    bot.send_message(m.chat.id,"ارسل الايدي")
+
+# ===== BROADCAST =====
+@bot.message_handler(func=lambda m: m.text=="📢 إعلان")
+def ad(m):
+    if not is_leader(m.chat.id): return
+    steps[m.chat.id]="broadcast"
+    bot.send_message(m.chat.id,"ارسل نص الاعلان")
+
+# ===== SEARCH =====
+@bot.message_handler(func=lambda m: m.text=="🔍 بحث لاعب")
+def search(m):
+    steps[m.chat.id]="search"
+    bot.send_message(m.chat.id,"ارسل الاسم او الرابط")
+
+# ===== ALL =====
+@bot.message_handler(content_types=["text","photo"])
+def all(m):
+    uid = m.chat.id
+    step = steps.get(uid)
+
+    if not step: return
+
+    # ADD LEADER
+    if step=="add_leader":
+        try:
+            new_id=int(m.text)
+            conn=get_conn()
+            cur=conn.cursor()
+            cur.execute("INSERT INTO leaders(user_id) VALUES(%s) ON CONFLICT DO NOTHING",(new_id,))
+            conn.commit()
+            put_conn(conn)
+            bot.send_message(uid,"✅ تم إضافة قائد")
+        except:
+            bot.send_message(uid,"❌ خطأ")
+        steps.pop(uid)
+        return
+
+    # REMOVE LEADER
+    if step=="remove_leader":
+        try:
+            del_id=int(m.text)
+            conn=get_conn()
+            cur=conn.cursor()
+            cur.execute("DELETE FROM leaders WHERE user_id=%s",(del_id,))
+            conn.commit()
+            put_conn(conn)
+            bot.send_message(uid,"✅ تم حذف قائد")
+        except:
+            bot.send_message(uid,"❌ خطأ")
+        steps.pop(uid)
+        return
+
+    # BROADCAST
+    if step=="broadcast":
+        conn=get_conn()
+        cur=conn.cursor()
+        cur.execute("SELECT user_id FROM players WHERE status='accepted'")
+        users=cur.fetchall()
+        put_conn(conn)
+
+        for u in users:
+            try: bot.send_message(u[0],m.text)
+            except: pass
+
+        bot.send_message(uid,"✅ تم الإرسال")
+        steps.pop(uid)
+        return
+
+    # SEARCH
+    if step=="search":
+        conn=get_conn()
+        cur=conn.cursor()
+        cur.execute("""
+        SELECT name,link,serial,screen_file_id 
+        FROM players 
+        WHERE name ILIKE %s OR link ILIKE %s
+        """,('%'+m.text+'%','%'+m.text+'%'))
+        results=cur.fetchall()
+        put_conn(conn)
+
+        if not results:
+            bot.send_message(uid,"❌ لا يوجد")
+        else:
+            for name,link,serial,screen in results:
+                txt=f"👤 {name}\n🔗 {link}\n🔢 {serial}"
+                if screen:
+                    bot.send_photo(uid,screen,caption=txt)
+                else:
+                    bot.send_message(uid,txt)
+
+        steps.pop(uid)
+        return
+
+    # REGISTER
+    if m.content_type=="text":
+        if step=="name":
+            cache[uid]={"name":m.text}
+            steps[uid]="link"
+            bot.send_message(uid,"ارسل رابط الفيس")
+            return
+
+        if step=="link":
+            if not valid_facebook(m.text):
+                bot.send_message(uid,"❌ رابط غير صالح")
+                return
+            cache[uid]["link"]=m.text
+            steps[uid]="serial"
+            bot.send_message(uid,"ارسل الرقم التسلسلي")
+            return
+
+        if step=="serial":
+            cache[uid]["serial"]=m.text
+            steps[uid]="screen"
+            bot.send_message(uid,"ارسل سكرين")
+            return
+
+    if m.content_type=="photo" and step=="screen":
+        file_id=m.photo[-1].file_id
+
+        conn=get_conn()
+        cur=conn.cursor()
+        cur.execute("""
+        INSERT INTO players(user_id,name,link,serial,status,screen_file_id)
+        VALUES(%s,%s,%s,%s,'pending',%s)
+        ON CONFLICT (user_id)
+        DO UPDATE SET name=EXCLUDED.name,link=EXCLUDED.link,serial=EXCLUDED.serial,screen_file_id=EXCLUDED.screen_file_id,status='pending'
+        """,(uid,cache[uid]["name"],cache[uid]["link"],cache[uid]["serial"],file_id))
+
+        conn.commit()
+        put_conn(conn)
+
+        bot.send_message(uid,"📩 تم إرسال طلبك للمراجعة")
+        steps.pop(uid)
+        cache.pop(uid)
 
 # ===== RUN =====
 while True:
