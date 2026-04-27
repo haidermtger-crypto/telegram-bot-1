@@ -1,8 +1,10 @@
 import telebot
 from telebot import types
-import time, os, re
+import time
+import os
 import psycopg2
 from psycopg2 import pool
+import re
 from datetime import datetime
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -14,28 +16,31 @@ bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 DATABASE_URL = os.getenv("DATABASE_URL")
 db_pool = psycopg2.pool.SimpleConnectionPool(1, 20, DATABASE_URL)
 
-def get_conn(): return db_pool.getconn()
-def put_conn(conn): db_pool.putconn(conn)
+def get_conn():
+    return db_pool.getconn()
 
-# ===== DATABASE =====
+def put_conn(conn):
+    db_pool.putconn(conn)
+
+# ===== DB =====
 conn = get_conn()
 cur = conn.cursor()
 
-cur.execute("""CREATE TABLE IF NOT EXISTS leaders(
-user_id BIGINT PRIMARY KEY)""")
-
-cur.execute("""CREATE TABLE IF NOT EXISTS players(
-user_id BIGINT PRIMARY KEY,
-name TEXT,
-link TEXT,
-serial TEXT,
-status TEXT,
-screen TEXT)""")
+cur.execute("CREATE TABLE IF NOT EXISTS leaders(user_id BIGINT PRIMARY KEY)")
+cur.execute("""
+CREATE TABLE IF NOT EXISTS players(
+    user_id BIGINT PRIMARY KEY,
+    name TEXT,
+    link TEXT,
+    serial TEXT,
+    status TEXT DEFAULT 'pending',
+    screen_file_id TEXT
+)
+""")
 
 conn.commit()
 put_conn(conn)
 
-# add owner
 conn = get_conn()
 cur = conn.cursor()
 cur.execute("INSERT INTO leaders(user_id) VALUES(%s) ON CONFLICT DO NOTHING",(OWNER_ID,))
@@ -52,37 +57,33 @@ def is_leader(uid):
     cur.execute("SELECT 1 FROM leaders WHERE user_id=%s",(uid,))
     r = cur.fetchone()
     put_conn(conn)
-    return r
+    return r is not None
 
 def subscribed(uid):
+    if is_leader(uid): return True
     try:
         m = bot.get_chat_member(CHANNEL, uid)
         return m.status in ["member","administrator","creator"]
     except:
         return False
 
-def is_facebook(link):
-    return "facebook.com" in link.lower()
+def valid_facebook(link):
+    return re.match(r"(https?://)?(www\.)?(facebook\.com|fb\.com)/", link)
 
-def allow_edit():
-    day = datetime.now().day
-    return 1 <= day <= 5
-
-# ===== MENUS =====
 def user_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("📝 تسجيل","📊 عدد اللاعبين")
     kb.row("ℹ️ معلومات","📞 تواصل")
+    kb.row("🔍 بحث لاعب")
     return kb
 
 def admin_menu():
     kb = user_menu()
-    kb.row("📥 الطلبات","🔍 بحث لاعب")
-    kb.row("📢 إعلان")
+    kb.row("📥 الطلبات","📢 إعلان")
     kb.row("➕ إضافة قائد","➖ حذف قائد")
     return kb
 
-def home(uid):
+def send_home(uid):
     if is_leader(uid):
         bot.send_message(uid,"👑 لوحة القائد",reply_markup=admin_menu())
     else:
@@ -93,19 +94,22 @@ def home(uid):
 def start(m):
     uid = m.chat.id
     steps.pop(uid,None)
+    cache.pop(uid,None)
 
     if not subscribed(uid):
-        bot.send_message(uid,"اشترك بالقناة ثم /start")
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("اشترك",url="https://t.me/mu_un1"))
+        bot.send_message(uid,"اشترك بالقناة ثم /start",reply_markup=kb)
         return
 
-    home(uid)
+    send_home(uid)
 
-# ===== INFO =====
+# ===== معلومات =====
 @bot.message_handler(func=lambda m: m.text=="ℹ️ معلومات")
 def info(m):
     bot.send_message(m.chat.id,
 """اهلا وسهلا 
-هذا ال بوت خاص بييانات لاعبين الاتحاد العراقي يرجى ارسال 
+هذا ال بوت خاص ببيانات لاعبين الاتحاد العراقي يرجى ارسال 
 اسمك 
 رابط صفحتك على فيس بوك 
 الرقم التسلسلي 
@@ -114,29 +118,37 @@ def info(m):
 بعدها سيصل طلبك للقاده للمراجعه 
 
 تنويه 
-متاح تغير معلوماتك بالفترة من 1 إلى 5 من كل شهر 
+متاح تغير معلوماتك بالفترة من 1 الى 5 من كل شهر 
 
 تحياتنا لكم 
 الاتحاد العراقي للكلانات""")
 
-# ===== CONTACT =====
+# ===== تواصل =====
 @bot.message_handler(func=lambda m: m.text=="📞 تواصل")
 def contact(m):
     bot.send_message(m.chat.id,"📬 تواصل: @haider_awwd")
 
-# ===== REGISTER =====
+# ===== تسجيل =====
 @bot.message_handler(func=lambda m: m.text=="📝 تسجيل")
 def reg(m):
     uid = m.chat.id
 
-    if not allow_edit():
-        bot.send_message(uid,"❌ لا يمكنك التعديل الآن")
-        return
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM players WHERE user_id=%s",(uid,))
+    row = cur.fetchone()
+    put_conn(conn)
+
+    if row:
+        day = datetime.now().day
+        if day < 1 or day > 5:
+            bot.send_message(uid,"❌ لا يمكنك التعديل الآن")
+            return
 
     steps[uid]="name"
     bot.send_message(uid,"ارسل اسمك")
 
-# ===== COUNT =====
+# ===== عدد =====
 @bot.message_handler(func=lambda m: m.text=="📊 عدد اللاعبين")
 def count(m):
     conn = get_conn()
@@ -144,24 +156,16 @@ def count(m):
     cur.execute("SELECT COUNT(*) FROM players WHERE status='accepted'")
     n = cur.fetchone()[0]
     put_conn(conn)
+    bot.send_message(m.chat.id,f"📊 عدد اللاعبين: {n}")
 
-    bot.send_message(m.chat.id,f"عدد اللاعبين: {n}")
-
-# ===== SEARCH =====
-@bot.message_handler(func=lambda m: m.text=="🔍 بحث لاعب")
-def search_btn(m):
-    if not is_leader(m.chat.id): return
-    steps[m.chat.id]="search"
-    bot.send_message(m.chat.id,"ارسل الاسم او الرابط")
-
-# ===== REQUESTS =====
+# ===== طلبات =====
 @bot.message_handler(func=lambda m: m.text=="📥 الطلبات")
 def requests(m):
     if not is_leader(m.chat.id): return
 
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM players WHERE status='pending'")
+    cur.execute("SELECT user_id,name,link,serial,screen_file_id FROM players WHERE status='pending'")
     rows = cur.fetchall()
     put_conn(conn)
 
@@ -169,9 +173,7 @@ def requests(m):
         bot.send_message(m.chat.id,"📭 لا توجد طلبات للمراجعة")
         return
 
-    for r in rows:
-        uid,name,link,serial,status,screen = r
-
+    for uid,name,link,serial,screen in rows:
         kb = types.InlineKeyboardMarkup()
         kb.row(
             types.InlineKeyboardButton("✅ قبول",callback_data=f"acc:{uid}"),
@@ -180,105 +182,61 @@ def requests(m):
 
         txt=f"{name}\n{link}\n{serial}\nID:{uid}"
 
-        bot.send_photo(m.chat.id,screen,caption=txt,reply_markup=kb)
+        if screen:
+            bot.send_photo(m.chat.id,screen,caption=txt,reply_markup=kb)
+        else:
+            bot.send_message(m.chat.id,txt,reply_markup=kb)
 
-# ===== CALLBACK =====
+# ===== CALLBACK (FIXED) =====
 @bot.callback_query_handler(func=lambda c: True)
-def call(c):
-    if not is_leader(c.message.chat.id): return
-
-    action,uid = c.data.split(":")
-    uid=int(uid)
+def callback(c):
+    if not is_leader(c.message.chat.id):
+        return
 
     conn = get_conn()
     cur = conn.cursor()
 
+    action, uid = c.data.split(":")
+    uid = int(uid)
+
+    old_text = c.message.caption if c.message.caption else c.message.text
+
     if action=="acc":
         cur.execute("UPDATE players SET status='accepted' WHERE user_id=%s",(uid,))
-        bot.send_message(uid,"✅ تم قبول طلبك بنجاح")
-        bot.edit_message_caption("✅ تمت الموافقة",c.message.chat.id,c.message.message_id)
-
-    if action=="rej":
-        cur.execute("DELETE FROM players WHERE user_id=%s",(uid,))
-        bot.send_message(uid,"❌ تم رفض طلبك تأكد من المعلومات")
-        bot.edit_message_caption("❌ تم الرفض",c.message.chat.id,c.message.message_id)
-
-    conn.commit()
-    put_conn(conn)
-
-# ===== ALL MESSAGES =====
-@bot.message_handler(content_types=["text","photo"])
-def all(m):
-    uid = m.chat.id
-    step = steps.get(uid)
-
-    if not step: return
-
-    if step=="search":
-        conn = get_conn()
-        cur = conn.cursor()
-
-        cur.execute("""SELECT * FROM players 
-        WHERE name ILIKE %s OR link ILIKE %s""",
-        (f"%{m.text}%",f"%{m.text}%"))
-
-        r = cur.fetchone()
-        put_conn(conn)
-
-        if not r:
-            bot.send_message(uid,"❌ لا يوجد لاعب")
-            return
-
-        _,name,link,serial,_,screen = r
-
-        bot.send_photo(uid,screen,
-        caption=f"👤 {name}\n🔗 {link}\n🔢 {serial}")
-
-        steps.pop(uid)
-        return
-
-    if m.content_type=="text":
-        if step=="name":
-            cache[uid]={"name":m.text}
-            steps[uid]="link"
-            bot.send_message(uid,"ارسل رابط الفيس")
-
-        elif step=="link":
-            if not is_facebook(m.text):
-                bot.send_message(uid,"❌ هذا ليس رابط فيس بوك")
-                return
-            cache[uid]["link"]=m.text
-            steps[uid]="serial"
-            bot.send_message(uid,"ارسل الرقم التسلسلي")
-
-        elif step=="serial":
-            cache[uid]["serial"]=m.text
-            steps[uid]="screen"
-            bot.send_message(uid,"ارسل سكرين")
-
-    elif m.content_type=="photo" and step=="screen":
-        file_id = m.photo[-1].file_id
-
-        conn = get_conn()
-        cur = conn.cursor()
-
-        cur.execute("""INSERT INTO players VALUES(%s,%s,%s,%s,%s,%s)
-        ON CONFLICT (user_id) DO UPDATE SET
-        name=EXCLUDED.name,
-        link=EXCLUDED.link,
-        serial=EXCLUDED.serial,
-        status='pending',
-        screen=EXCLUDED.screen""",
-        (uid,cache[uid]["name"],cache[uid]["link"],
-         cache[uid]["serial"],"pending",file_id))
-
         conn.commit()
-        put_conn(conn)
 
-        steps.pop(uid)
-        cache.pop(uid)
+        bot.send_message(uid,"🎉 تم قبول طلبك بنجاح")
 
-        bot.send_message(uid,"📨 تم إرسال طلبك للمراجعة")
+        new_text = old_text + "\n\n✅ تمت الموافقة"
+
+    elif action=="rej":
+        cur.execute("DELETE FROM players WHERE user_id=%s",(uid,))
+        conn.commit()
+
+        bot.send_message(uid,"❌ تم رفض طلبك، تأكد من صحة معلوماتك")
+
+        new_text = old_text + "\n\n❌ تم الرفض"
+
+    try:
+        if c.message.photo:
+            bot.edit_message_caption(
+                caption=new_text,
+                chat_id=c.message.chat.id,
+                message_id=c.message.message_id,
+                reply_markup=None
+            )
+        else:
+            bot.edit_message_text(
+                text=new_text,
+                chat_id=c.message.chat.id,
+                message_id=c.message.message_id,
+                reply_markup=None
+            )
+    except:
+        pass
+
+    bot.answer_callback_query(c.id,"تم")
+    put_conn(conn)
 
 # ===== RUN =====
 while True:
