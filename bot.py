@@ -140,7 +140,6 @@ def reg(m):
     put_conn(conn)
 
     if row:
-        # تعديل مسموح فقط 1-5
         day = datetime.now().day
         if day < 1 or day > 5:
             bot.send_message(uid,"❌ لا يمكنك التعديل الآن")
@@ -229,20 +228,6 @@ def search(m):
     steps[m.chat.id]="search"
     bot.send_message(m.chat.id,"ارسل الاسم او الرابط")
 
-# ===== إضافة قائد =====
-@bot.message_handler(func=lambda m: m.text=="➕ إضافة قائد")
-def add_leader(m):
-    if m.chat.id != OWNER_ID: return
-    steps[m.chat.id]="add_leader"
-    bot.send_message(m.chat.id,"ارسل ايدي")
-
-# ===== حذف قائد =====
-@bot.message_handler(func=lambda m: m.text=="➖ حذف قائد")
-def del_leader(m):
-    if m.chat.id != OWNER_ID: return
-    steps[m.chat.id]="del_leader"
-    bot.send_message(m.chat.id,"ارسل ايدي")
-
 # ===== ALL =====
 @bot.message_handler(content_types=["text","photo"])
 def all(m):
@@ -251,6 +236,7 @@ def all(m):
 
     if not step: return
 
+    # ===== BROADCAST =====
     if step=="broadcast":
         conn=get_conn()
         cur=conn.cursor()
@@ -267,41 +253,35 @@ def all(m):
         steps.pop(uid)
         return
 
+    # ===== SEARCH (UPDATED) =====
     if step=="search":
         conn=get_conn()
         cur=conn.cursor()
-        cur.execute("SELECT name,link,serial FROM players WHERE name ILIKE %s OR link ILIKE %s",('%'+m.text+'%','%'+m.text+'%'))
-        r=cur.fetchall()
+        cur.execute("""
+        SELECT name, link, serial, screen_file_id 
+        FROM players 
+        WHERE name ILIKE %s OR link ILIKE %s
+        """,('%'+m.text+'%','%'+m.text+'%'))
+        results = cur.fetchall()
         put_conn(conn)
 
-        if not r:
+        if not results:
             bot.send_message(uid,"❌ لا يوجد")
         else:
-            for i in r:
-                bot.send_message(uid,f"{i[0]}\n{i[1]}\n{i[2]}")
+            for name, link, serial, screen in results:
+                txt = f"""👤 الاسم: {name}
+🔗 الرابط: {link}
+🔢 الرقم: {serial}"""
+
+                if screen:
+                    bot.send_photo(uid, screen, caption=txt)
+                else:
+                    bot.send_message(uid, txt)
+
         steps.pop(uid)
         return
 
-    if step=="add_leader":
-        conn=get_conn()
-        cur=conn.cursor()
-        cur.execute("INSERT INTO leaders(user_id) VALUES(%s) ON CONFLICT DO NOTHING",(int(m.text),))
-        conn.commit()
-        put_conn(conn)
-        bot.send_message(uid,"✅ تم إضافة قائد")
-        steps.pop(uid)
-        return
-
-    if step=="del_leader":
-        conn=get_conn()
-        cur=conn.cursor()
-        cur.execute("DELETE FROM leaders WHERE user_id=%s",(int(m.text),))
-        conn.commit()
-        put_conn(conn)
-        bot.send_message(uid,"❌ تم حذف قائد")
-        steps.pop(uid)
-        return
-
+    # ===== REGISTER FLOW =====
     if m.content_type=="text":
         if step=="name":
             cache[uid]={"name":m.text}
